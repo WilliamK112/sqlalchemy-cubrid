@@ -4,7 +4,7 @@
 Measures compile time for:
 - Simple SELECT with LIMIT/OFFSET
 - INSERT ... ON DUPLICATE KEY UPDATE (the known hot path)
-- MERGE statement
+- Simple INSERT
 - SELECT with FOR UPDATE
 
 Usage:
@@ -17,6 +17,17 @@ import argparse
 import time
 
 from sqlalchemy import Column, Integer, MetaData, String, Table, create_mock_engine, insert, select
+
+
+def positive_int(value: str) -> int:
+    """Return *value* as an integer greater than zero for ``argparse``."""
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 def create_test_objects():
@@ -75,10 +86,10 @@ def bench_simple_insert(engine, users, n: int) -> float:
     return time.perf_counter() - start
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Compiler microbenchmark")
-    parser.add_argument("--iterations", "-n", type=int, default=10000)
-    args = parser.parse_args()
+    parser.add_argument("--iterations", "-n", type=positive_int, default=10000)
+    args = parser.parse_args(argv)
     n = args.iterations
 
     engine, users = create_test_objects()
