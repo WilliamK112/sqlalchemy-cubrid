@@ -18,7 +18,14 @@ from sqlalchemy import Column, Integer, MetaData, String, Table, select
 from sqlalchemy.exc import CompileError
 
 from sqlalchemy_cubrid import types as cubrid_types
-from sqlalchemy_cubrid._compat import bind_with_type, is_literal_value
+from sqlalchemy_cubrid._compat import (
+    bind_with_type,
+    get_distinct,
+    get_for_update_arg,
+    get_limit_clause,
+    get_offset_clause,
+    is_literal_value,
+)
 from sqlalchemy_cubrid.compiler import _CUBRID_OFFSET_NO_LIMIT_ROW_COUNT
 from sqlalchemy_cubrid.dialect import CubridDialect
 
@@ -983,6 +990,21 @@ class TestLiteralValueCompilation:
 
 
 class TestCompatHelpers:
+    @pytest.mark.parametrize(
+        ("getter", "attribute", "fallback"),
+        [
+            (get_for_update_arg, "_for_update_arg", None),
+            (get_limit_clause, "_limit_clause", None),
+            (get_offset_clause, "_offset_clause", None),
+            (get_distinct, "_distinct", False),
+        ],
+    )
+    def test_select_attribute_accessors(self, getter, attribute, fallback):
+        statement = select(users.c.id).limit(10).offset(5).distinct().with_for_update()
+
+        assert getter(statement) is getattr(statement, attribute)
+        assert getter(object()) is fallback
+
     def test_is_literal_value(self):
         assert is_literal_value(1) is True
         assert is_literal_value("value") is True
