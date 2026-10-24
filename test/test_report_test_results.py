@@ -215,3 +215,123 @@ def test_threshold_without_coverage_is_incomplete(tmp_path, capsys):
     )
     assert code == 1
     assert "INCOMPLETE" in capsys.readouterr().out
+
+
+def _write_summary(tmp_path, pytest_exit=0, junit_cases=(PASSING,)):
+    out = tmp_path / "summary.json"
+    mod.main(
+        [
+            "--lane", "offline",
+            "--junit", str(_junit(tmp_path, *junit_cases)),
+            "--coverage", str(_coverage(tmp_path, 0.96)),
+            "--threshold", "95",
+            "--pytest-exit", str(pytest_exit),
+            "--output", str(out),
+        ]
+    )  # fmt: skip
+    return out
+
+
+def test_step_summary_renders_the_console_line_as_markdown(tmp_path, capsys):
+    out = _write_summary(tmp_path)
+    capsys.readouterr()
+    code = mod.main(["step-summary", "--summary", str(out), "--title", "Unit tests (Python 3.12)"])
+    assert code == 0
+    text = capsys.readouterr().out
+    summary = json.loads(out.read_text(encoding="utf-8"))
+    assert text == f"### Unit tests (Python 3.12)\n\n`{mod.format_line(summary)}`\n"
+    assert "offline: PASS" in text
+
+
+def test_step_summary_shows_a_failing_lane_and_still_exits_zero(tmp_path, capsys):
+    out = _write_summary(tmp_path, pytest_exit=1, junit_cases=(PASSING, FAILED))
+    capsys.readouterr()
+    assert mod.main(["step-summary", "--summary", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert text.startswith("### Test results\n\n`offline: FAIL;")
+
+
+@pytest.mark.parametrize("content", [None, "not json", "[]", '{"lane": "x"}'])
+def test_step_summary_reports_a_missing_or_unreadable_summary(tmp_path, capsys, content):
+    path = tmp_path / "summary.json"
+    if content is not None:
+        path.write_text(content, encoding="utf-8")
+    assert mod.main(["step-summary", "--summary", str(path), "--title", "T"]) == 0
+    text = capsys.readouterr().out
+    assert text == f"### T\n\nNo readable `{path}` was written (the run stopped early).\n"
+
+
+def test_require_executed_makes_an_all_skipped_run_incomplete(tmp_path):
+    kwargs = {"lane": "integration", "coverage": None, "threshold": None, "pytest_exit": 0}
+    skipped = mod.build_summary(junit=_junit(tmp_path, SKIPPED), require_executed=True, **kwargs)
+    assert skipped["status"] == "INCOMPLETE"
+    assert skipped["executed"] is False
+    ran = mod.build_summary(
+        junit=_junit(tmp_path, SKIPPED, XFAILED), require_executed=True, **kwargs
+    )
+    assert ran["status"] == "PASS"
+    assert ran["executed"] is True
+    # Without the flag, an all-skipped run keeps its previous meaning.
+    assert mod.build_summary(junit=_junit(tmp_path, SKIPPED), **kwargs)["status"] == "PASS"
+
+
+def test_reason_is_recorded_and_stops_a_pass(tmp_path):
+    summary = mod.build_summary(
+        lane="integration",
+        junit=_junit(tmp_path, PASSING),
+        coverage=None,
+        threshold=None,
+        pytest_exit=0,
+        reason="why",
+    )
+    assert summary["status"] == "INCOMPLETE"
+    assert summary["problems"] == ["why"]
+
+
+def test_environment_records_versions_and_no_credential(tmp_path, monkeypatch):
+    monkeypatch.setenv("CUBRID_PASSWORD", "topsecret")
+    monkeypatch.setenv("CUBRID_TEST_URL", "cubrid+pycubrid://dba:topsecret@localhost/testdb")
+    output = tmp_path / "out" / "environment.json"
+    code = mod.main(
+        [
+            "environment",
+            "--lane", "integration",
+            "--command", "make integration",
+            "--cubrid-version", "11.2",
+            "--driver", "pycubrid",
+            "--output", str(output),
+        ]
+    )  # fmt: skip
+    assert code == 0
+    text = output.read_text(encoding="utf-8")
+    assert "topsecret" not in text
+    document = json.loads(text)
+    assert document["cubrid_version"] == "11.2"
+    assert document["driver"]["name"] == "pycubrid"
+    assert document["sqlalchemy"]
+    assert document["python"] and document["platform"]
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("CUBRID_PASSWORD=topsecret make integration", "CUBRID_PASSWORD=*** make integration"),
+        ("make integration API_TOKEN='a b' X=1", "make integration API_TOKEN=*** X=1"),
+        ('DB_SECRET="s s" make x', "DB_SECRET=*** make x"),
+        (
+            "make it CUBRID_TEST_URL=cubrid+pycubrid://dba:p%40ss@localhost/db",
+            "make it CUBRID_TEST_URL=cubrid+pycubrid://dba:***@localhost/db",
+        ),
+        (
+            "make integration INTEGRATION_DRIVER=pycubrid",
+            "make integration INTEGRATION_DRIVER=pycubrid",
+        ),
+    ],
+)
+def test_environment_redacts_credentials_in_the_command(tmp_path, command, expected):
+    output = tmp_path / "environment.json"
+    mod.main(
+        ["environment", "--lane", "l", "--command", command, "--cubrid-version", "11.2",
+         "--driver", "pycubrid", "--output", str(output)]
+    )  # fmt: skip
+    assert json.loads(output.read_text("utf-8"))["command"] == expected
